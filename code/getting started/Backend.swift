@@ -77,7 +77,6 @@ class Backend {
             // update UI (nil values are not passed down the stream)
             self.updateUserData(withSignInStatus: isSignedIn)
         }
-
     }
     
     // MARK: Authentication
@@ -88,7 +87,7 @@ class Backend {
             userData.isSignedIn = status
 
             // when user is signed in, query the database, otherwise empty our model
-            if status {
+            if (status && userData.notes.isEmpty) {
                 queryToken = self.queryNotes()
             } else {
                 userData.notes = []
