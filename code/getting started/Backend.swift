@@ -202,8 +202,8 @@ class Backend {
     
     func storeImage(name: String, image: Data) -> AnyCancellable? {
     
-//        let options = StorageUploadDataRequest.Options(accessLevel: .private)
-        return Amplify.Storage.uploadData(key: name, data: image) // options: options
+        let options = StorageUploadDataRequest.Options(accessLevel: .private)
+        return Amplify.Storage.uploadData(key: name, data: image, options: options) 
         .resultPublisher // Storage offers a resultPublisher and a progressPublisher to track progress.  I will not use the later
         .sink(
             receiveCompletion: {
@@ -218,7 +218,8 @@ class Backend {
     // TODO remove the callback and use Combine instead
     func retrieveImage(name: String, completed: @escaping (Data) -> Void) -> AnyCancellable? {
 
-        return Amplify.Storage.downloadData(key: name)
+        let options = StorageDownloadDataRequest.Options(accessLevel: .private)
+        return Amplify.Storage.downloadData(key: name, options: options)
         .resultPublisher // Storage offers a resultPublisher and a progressPublisher to track progress.  I will not use the later
         .sink(
             receiveCompletion: {
@@ -234,7 +235,9 @@ class Backend {
     }
 
     func deleteImage(name: String) -> AnyCancellable? {
-        return Amplify.Storage.remove(key: name)
+        
+        let options = StorageRemoveRequest.Options(accessLevel: .private)
+        return Amplify.Storage.remove(key: name, options: options)
         .resultPublisher
         .sink(
             receiveCompletion: {
