@@ -30,12 +30,10 @@ class Backend {
         }
         
         // let's check if user is signedIn or not
-        
         sessionToken = Amplify.Auth.fetchAuthSession()
         .resultPublisher
         .receive(on: DispatchQueue.main) // execute sink on main queue because it updates the UI
         .sink(
-
             receiveCompletion: {
                 if case .failure(let error) = $0 {
                     print("Fetch auth session failed with error - \(error)")
@@ -77,7 +75,6 @@ class Backend {
             // update UI (nil values are not passed down the stream)
             self.updateUserData(withSignInStatus: isSignedIn)
         }
-
     }
     
     // MARK: Authentication
@@ -88,13 +85,12 @@ class Backend {
             userData.isSignedIn = status
 
             // when user is signed in, query the database, otherwise empty our model
-            if status {
+            if (status && userData.notes.isEmpty) {
                 queryToken = self.queryNotes()
             } else {
                 userData.notes = []
             }
 //        }
-        
     }
     
     public func signIn() -> AnyCancellable? {
