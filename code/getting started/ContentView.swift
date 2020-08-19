@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import Combine
 
 // singleton object to store user data
 class UserData : ObservableObject {
@@ -23,6 +24,8 @@ class Note : Identifiable, ObservableObject {
     var description : String?
     var imageName   : String?
     @Published var image : Image?
+    
+    var retrieveImageToken : AnyCancellable?
         
     init(id: String, name: String, description: String? = nil, image: String? = nil ) {
         self.id          = id
@@ -36,7 +39,7 @@ class Note : Identifiable, ObservableObject {
         
         if let name = self.imageName {
             // asynchronously download the image
-            Backend.shared.retrieveImage(name: name) { (data) in
+            self.retrieveImageToken = Backend.shared.retrieveImage(name: name) { (data) in
                 DispatchQueue.main.async() {
                     let uim = UIImage(data: data)
                     self.image = Image(uiImage: uim!)
@@ -96,6 +99,9 @@ struct ContentView: View {
     @State var name : String        = "New Note"
     @State var description : String = "This is a new note"
     @State var image : String       = "image"
+    
+    @State var deleteNoteToken : AnyCancellable?
+    @State var deleteImageToken : AnyCancellable?
 
     var body: some View {
 
@@ -111,11 +117,11 @@ struct ContentView: View {
                                 let note = self.userData.notes.remove(at: $0)
                                 
                                 // asynchronously remove from database
-                                Backend.shared.deleteNote(note: note)
+                                self.deleteNoteToken = Backend.shared.deleteNote(note: note)
                                 
                                 if let n = note.imageName {
                                     // asynchronously delete the image
-                                    Backend.shared.deleteImage(name: n)
+                                    self.deleteImageToken = Backend.shared.deleteImage(name: n)
                                 }
                             }
                         }
@@ -145,6 +151,9 @@ struct AddNoteView: View {
     @State var description : String = "This is a new note"
     @State var image : UIImage?
     @State var showCaptureImageView = false
+    
+    @State var createNoteToken : AnyCancellable?
+    @State var storeImageToken : AnyCancellable?
 
     var body: some View {
         Form {
@@ -186,16 +195,18 @@ struct AddNoteView: View {
                                     name: self.$name.wrappedValue,
                                     description: self.$description.wrappedValue)
 
+                    // TODO this code can be embedded into Backend.createNote()
+                    // see last example of https://aws.amazon.com/blogs/mobile/using-swift-combine-with-aws-amplify/
                     if let i = self.image  {
                         note.imageName = UUID().uuidString
                         note.image = Image(uiImage: i)
-
+                        guard let jpeg = i.jpegData(compressionQuality: 0.5) else { return }
                         // asynchronously store the image (and assume it will work)
-                        Backend.shared.storeImage(name: note.imageName!, image: (i.pngData())!)
+                        self.storeImageToken = Backend.shared.storeImage(name: note.imageName!, image: jpeg)
                     }
                     
                     // asynchronously store the note (and assume it will succeed)
-                    Backend.shared.createNote(note: note)
+                    self.createNoteToken = Backend.shared.createNote(note: note)
                     
                     // add the new note in our userdata, this will refresh UI
                     withAnimation { self.userData.notes.append(note) }
@@ -208,8 +219,9 @@ struct AddNoteView: View {
 }
     
 struct SignInButton: View {
+    @State var signInToken : AnyCancellable?
     var body: some View {
-        Button(action: { Backend.shared.signIn() }){
+        Button(action: { self.signInToken = Backend.shared.signIn() }){
             HStack {
                 Image(systemName: "person.fill")
                     .scaleEffect(1.5)
@@ -226,9 +238,9 @@ struct SignInButton: View {
 }
 
 struct SignOutButton : View {
-
+    @State var signOutToken : AnyCancellable?
     var body: some View {
-        Button(action: { Backend.shared.signOut() }) {
+        Button(action: { self.signOutToken = Backend.shared.signOut() }) {
                 Text("Sign Out")
         }
     }

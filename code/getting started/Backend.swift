@@ -1,4 +1,6 @@
 import Foundation
+import Combine
+
 import Amplify
 import AmplifyPlugins
 
@@ -9,6 +11,12 @@ class Backend {
     static func initialize() -> Backend {
         return .shared
     }
+    
+    // these tokens need to stay around for the time the app is running
+    fileprivate var sessionToken : AnyCancellable?
+    fileprivate var hubToken     : AnyCancellable?
+    fileprivate var queryToken   : AnyCancellable?
+
     private init() {
         // initialize amplify
         do {
@@ -22,42 +30,52 @@ class Backend {
         }
         
         // let's check if user is signedIn or not
-        Amplify.Auth.fetchAuthSession { (result) in
+        
+        sessionToken = Amplify.Auth.fetchAuthSession()
+        .resultPublisher
+        .receive(on: DispatchQueue.main) // execute sink on main queue because it updates the UI
+        .sink(
 
-            do {
-                let session = try result.get()
-                
+            receiveCompletion: {
+                if case .failure(let error) = $0 {
+                    print("Fetch auth session failed with error - \(error)")
+                }
+            },
+            receiveValue: { session in
                 // let's update UserData and the UI
                 self.updateUserData(withSignInStatus: session.isSignedIn)
-                
-            } catch {
-                print("Fetch auth session failed with error - \(error)")
-            }
-
-        }
-        
+        })
+    
         // listen to auth events.
         // see https://github.com/aws-amplify/amplify-ios/blob/master/Amplify/Categories/Auth/Models/AuthEventName.swift
-        _ = Amplify.Hub.listen(to: .auth) { (payload) in
+        hubToken = Amplify.Hub.publisher(for: .auth)
+        .compactMap { payload -> Bool? in
 
+            var isSignedIn : Bool? = nil // nil values are not passed down the stream to sink()
             switch payload.eventName {
+                case HubPayload.EventName.Auth.signedIn:
+                    print("==HUB== User signed In, update UI")
+                    isSignedIn = true
 
-            case HubPayload.EventName.Auth.signedIn:
-                print("==HUB== User signed In, update UI")
-                self.updateUserData(withSignInStatus: true)
+                case HubPayload.EventName.Auth.signedOut:
+                    print("==HUB== User signed Out, update UI")
+                    isSignedIn = false
 
-            case HubPayload.EventName.Auth.signedOut:
-                print("==HUB== User signed Out, update UI")
-                self.updateUserData(withSignInStatus: false)
+                case HubPayload.EventName.Auth.sessionExpired:
+                    print("==HUB== Session expired, show sign in UI")
+                    isSignedIn = false
 
-            case HubPayload.EventName.Auth.sessionExpired:
-                print("==HUB== Session expired, show sign in aui")
-                self.updateUserData(withSignInStatus: false)
-
-            default:
-                //print("==HUB== \(payload)")
-                break
+                default:
+                    //print("==HUB== \(payload)")
+                    break
             }
+
+            return isSignedIn
+        }
+        .receive(on: DispatchQueue.main) // execute sink on main queue because it updates the UI
+        .sink { isSignedIn in
+            // update UI (nil values are not passed down the stream)
+            self.updateUserData(withSignInStatus: isSignedIn)
         }
 
     }
@@ -65,148 +83,171 @@ class Backend {
     // MARK: Authentication
     // change our internal state, this triggers an UI update on the main thread
     func updateUserData(withSignInStatus status : Bool) {
-        DispatchQueue.main.async() {
+//        DispatchQueue.main.async() { // not necessary anymore as the thread selection is made by Combine
             let userData : UserData = .shared
             userData.isSignedIn = status
 
             // when user is signed in, query the database, otherwise empty our model
             if status {
-                self.queryNotes()
+                queryToken = self.queryNotes()
             } else {
                 userData.notes = []
             }
-        }
+//        }
+        
     }
     
-    public func signIn() {
+    public func signIn() -> AnyCancellable? {
 
-        Amplify.Auth.signInWithWebUI(presentationAnchor: UIApplication.shared.windows.first!) { result in
-            switch result {
-            case .success(_):
-                print("Sign in succeeded")
-            case .failure(let error):
-                print("Sign in failed \(error)")
+        return Amplify.Auth.signInWithWebUI(presentationAnchor: UIApplication.shared.windows.first!)
+        .resultPublisher
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 {
+                    print("Sign in failed: \(error)")
+                }
+            },
+            receiveValue: { result in
+                print("Sign in succeeded: \(result)")
             }
-        }
+        )
+       
     }
 
     // signout
-    public func signOut() {
+    public func signOut() -> AnyCancellable? {
 
-        Amplify.Auth.signOut() { (result) in
-            switch result {
-            case .success:
-                print("Successfully signed out")
-            case .failure(let error):
-                print("Sign out failed with error \(error)")
+        return Amplify.Auth.signOut()
+        .resultPublisher
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 {
+                    print("Sign out failed with error: \(error)")
+                }
+            },
+            receiveValue: { result in
+                print("Successfully signed out: \(result)")
             }
-        }
+        )
     }
     
     // MARK: API Access
     
-    func queryNotes() {
+    func queryNotes() -> AnyCancellable? {
         
-        Amplify.API.query(request: .list(NoteData.self)) { event in
-            switch event {
-            case .success(let result):
+        return Amplify.API.query(request: .list(NoteData.self))
+        .resultPublisher
+        .receive(on: DispatchQueue.main) // execute sink on main queue because it updates the UI
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 { //other values are .finished
+                    print("Can not retrieve Notes : error \(error)")
+                }
+            },
+            receiveValue: { result in
                 switch result {
-                case .success(let notesData):
-                    print("Successfully retrieved list of Notes")
-                    
-                    for n in notesData {
-                        let note = Note.init(from: n)
-                        DispatchQueue.main.async() {
+                    case .success(let notesData):
+                        print("Successfully retrieved list of Notes")
+
+                        for n in notesData {
+                            let note = Note.init(from: n)
                             UserData.shared.notes.append(note)
                         }
-                    }
-                    
-                case .failure(let error):
-                    print("Can not retrieve result : error  \(error.errorDescription)")
-                }
-            case .failure(let error):
-                print("Can not retrieve Notes : error \(error)")
-            }
-        }
-    }
-    
-    func createNote(note: Note) {
-        
-        Amplify.API.mutate(request: .create(note.data)) { event in
-            switch event {
-            case .success(let result):
-                switch result {
-                case .success(let data):
-                    print("Successfully created note: \(data)")
-                case .failure(let error):
-                    print("Got failed result with \(error.errorDescription)")
-                }
-            case .failure(let error):
-                print("Got failed event with error \(error)")
-            }
-        }
-    }
-    
-    func deleteNote(note: Note) {
-        
-        Amplify.API.mutate(request: .delete(note.data)) { event in
-            switch event {
-            case .success(let result):
-                switch result {
-                case .success(let data):
-                    print("Successfully deleted note: \(data)")
-                case .failure(let error):
-                    print("Got failed result with \(error.errorDescription)")
-                }
-            case .failure(let error):
-                print("Got failed event with error \(error)")
-            }
-        }
-    }
-    
-    // MARK: Image Access
-    
-    func storeImage(name: String, image: Data) {
-        
-//        let options = StorageUploadDataRequest.Options(accessLevel: .private)
-        Amplify.Storage.uploadData(key: name, data: image,// options: options,
-            progressListener: { progress in
-                // optionlly update a progress bar here
-            }, resultListener: { event in
-                switch event {
-                case .success(let data):
-                    print("Image upload completed: \(data)")
-                case .failure(let storageError):
-                    print("Image upload failed: \(storageError.errorDescription). \(storageError.recoverySuggestion)")
-            }
-        })
-    }
-    
-    func retrieveImage(name: String, completed: @escaping (Data) -> Void) {
-        Amplify.Storage.downloadData(key: name,
-            progressListener: { progress in
-                // in case you want to monitor progress
-            }, resultListener: { (event) in
-                switch event {
-                case let .success(data):
-                    print("Image \(name) loaded")
-                    completed(data)
-                case let .failure(storageError):
-                    print("Can not download image: \(storageError.errorDescription). \(storageError.recoverySuggestion)")
+                    case .failure(let error):
+                        print("Can not retrieve result : error  \(error.errorDescription)")
                 }
             }
         )
     }
-
-    func deleteImage(name: String) {
-        Amplify.Storage.remove(key: name,
-            resultListener: { (event) in
-                switch event {
-                case let .success(data):
-                    print("Image \(data) deleted")
-                case let .failure(storageError):
-                    print("Can not delete image: \(storageError.errorDescription). \(storageError.recoverySuggestion)")
+    
+    func createNote(note: Note) -> AnyCancellable? {
+        
+        return Amplify.API.mutate(request: .create(note.data))
+        .resultPublisher
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 { //other values are .finished
+                    print("Can not create Note : error \(error)")
                 }
+            },
+            receiveValue: { result in
+                switch result {
+                    case .success(let data):
+                        print("Successfully created note: \(data)")
+                    case .failure(let error):
+                        print("Unable to create note: \(error)")
+                }
+            }
+        )
+    }
+    
+    func deleteNote(note: Note) -> AnyCancellable? {
+        
+        return Amplify.API.mutate(request: .delete(note.data))
+            .resultPublisher
+            .sink(
+                receiveCompletion: {
+                    if case .failure(let error) = $0 { //other values are .finished
+                        print("Can not delete Note : error \(error)")
+                    }
+                },
+                receiveValue: { result in
+                    switch result {
+                        case .success(let data):
+                            print("Successfully deleted note: \(data)")
+                        case .failure(let error):
+                            print("Unable to delete note: \(error)")
+                    }
+                }
+            )
+    }
+    
+    // MARK: Image Access
+    
+    func storeImage(name: String, image: Data) -> AnyCancellable? {
+    
+//        let options = StorageUploadDataRequest.Options(accessLevel: .private)
+        return Amplify.Storage.uploadData(key: name, data: image) // options: options
+        .resultPublisher // Storage offers a resultPublisher and a progressPublisher to track progress.  I will not use the later
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 { //other values are .finished
+                    print("Can not upload image : error \(error)")
+                }
+            },
+            receiveValue: { print($0) }
+        )
+    }
+    
+    // TODO remove the callback and use Combine instead
+    func retrieveImage(name: String, completed: @escaping (Data) -> Void) -> AnyCancellable? {
+
+        return Amplify.Storage.downloadData(key: name)
+        .resultPublisher // Storage offers a resultPublisher and a progressPublisher to track progress.  I will not use the later
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 { //other values are .finished
+                    print("Can not download image : error \(error)")
+                }
+            },
+            receiveValue: { data in
+                print("Image \(name) loaded")
+                completed(data)
+            }
+        )
+    }
+
+    func deleteImage(name: String) -> AnyCancellable? {
+        return Amplify.Storage.remove(key: name)
+        .resultPublisher
+        .sink(
+            receiveCompletion: {
+                if case .failure(let error) = $0 { //other values are .finished
+                    print("Can not delete image : error \(error)")
+                }
+            },
+            receiveValue: { data in
+                print("Image \(name) deleted")
             }
         )
     }
